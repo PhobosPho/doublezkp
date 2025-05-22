@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ZKP Voting System</title>
+  <!-- Include web3.js -->
+  <script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #f0f4f8;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+      color: #333;
+    }
+    h1 { margin-bottom: 0.5rem; }
+    #status { font-size: 1.2rem; color: #1d3557; margin-bottom: 0.5rem; }
+    #countdown { font-size: 1.1rem; color: #e63946; margin-bottom: 1rem; }
+    .card {
+      background: white;
+      padding: 2rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+      max-width: 450px;
+      width: 100%;
+      margin-bottom: 1rem;
+      display: none;
+    }
+    label { display: block; margin-top: 1rem; font-weight: 600; }
+    input, select, button {
+      width: 100%;
+      padding: 0.6rem;
+      margin-top: 0.5rem;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+    button {
+      background: #1d3557;
+      color: white;
+      border: none;
+      margin-top: 1rem;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:hover { background: #457b9d; }
+    .success { color: green; margin-top: 1rem; }
+    .error { color: red; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>ZKP Voting System</h1>
+  <div id="status">🔐 Please connect your MetaMask wallet to begin.</div>
+  <div id="countdown"></div>
+
+  <!-- Connect Card -->
+  <div class="card" id="connectCard" style="display: block;">
+    <button onclick="connectWallet()">🔗 Connect MetaMask</button>
+  </div>
+
+  <!-- Identity Card -->
+  <div class="card" id="identityCard">
+    <label for="cnp">CNP</label>
+    <input type="text" id="cnp" />
+    <label for="uid">UID</label>
+    <input type="text" id="uid" />
+    <button onclick="submitIdentity()">✅ Confirm Identity</button>
+    <div id="identityStatus"></div>
+  </div>
+
+  <!-- Vote Card -->
+  <div class="card" id="voteCard">
+    <label for="vote">Select Candidate:</label>
+    <select id="vote"></select>
+    <button onclick="castVote()">🗳️ Submit Vote</button>
+    <div id="voteStatus"></div>
+  </div>
+
+  <!-- Result Card -->
+  <div class="card" id="resultCard">
+    <h3>🧠 Winner</h3>
+    <div id="winnerInfo"></div>
+  </div>
+
+  <script>
+    // Global variables for multi-user operation.
+    // (Each browser session will have its own keys.)
+    let clientKeyPair, sharedSecretKey;
+    let clientPublicPem = null; // Client's ECDH public key in PEM format
+    let account, contract, storedNullifier, storedCommitment;
+
+    // Replace with your smart contract values
+    const CONTRACT_ADDRESS = "0x2f0Db61d8caa28F83fc909E6a0916512014967E0";
+    const CONTRACT_ABI = [
+      {
+        "inputs": [
+          { "internalType": "bytes32", "name": "nullifier", "type": "bytes32" },
+          { "internalType": "bytes32", "name": "commitment", "type": "bytes32" },
+          { "internalType": "uint256", "name": "candidateIndex", "type": "uint256" }
+        ],
+        "name": "castVote",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+      },
+      {
+        "inputs": [
+          { "internalType": "string[]", "name": "candidateNames", "type": "string[]" },
+          { "internalType": "uint256", "name": "durationSeconds", "type": "uint256" }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "constructor"
+      },
+      {
+        "anonymous": false,
+        "inputs": [
+          { "indexed": false, "internalType": "bytes32", "name": "nullifier", "type": "bytes32" },
+          { "indexed": false, "internalType": "bytes32", "name": "commitment", "type": "bytes32" },
+          { "indexed": true, "internalType": "uint256", "name": "candidateIndex", "type": "uint256" }
+        ],
+        "name": "VoteCast",
+        "type": "event"
+      },
+      {
+        "inputs": [],
+        "name": "admin",
+        "outputs": [{ "internalType": "address", "name": "", "type": "address" }],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+        "name": "candidates",
+        "outputs": [
+          { "internalType": "string", "name": "name", "type": "string" },
+          { "internalType": "uint256", "name": "voteCount", "type": "uint256" }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [{ "internalType": "uint256", "name": "index", "type": "uint256" }],
+        "name": "getCandidate",
+        "outputs": [
+          { "internalType": "string", "name": "", "type": "string" },
+          { "internalType": "uint256", "name": "", "type": "uint256" }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [],
+        "name": "getTotalCandidates",
+        "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [],
+        "name": "getWinner",
+        "outputs": [
+          { "internalType": "string", "name": "name", "type": "string" },
+          { "internalType": "uint256", "name": "voteCount", "type": "uint256" }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [{ "internalType": "bytes32", "name": "", "type": "bytes32" }],
+        "name": "nullifiers",
+        "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [],
+        "name": "votingEnds",
+        "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+        "stateMutability": "view",
+        "type": "function"
+      }
+    ];
+
+    // ------------------------
+    // Utility Functions
+    // ------------------------
+
+    // Convert ArrayBuffer to PEM formatted string
+    function arrayBufferToPem(buffer) {
+      const binary = String.fromCharCode(...new Uint8Array(buffer));
+      const base64 = btoa(binary);
+      const lines = base64.match(/.{1,64}/g).join("\n");
+      return `-----BEGIN PUBLIC KEY-----\n${lines}\n-----END PUBLIC KEY-----`;
+    }
+
+    // Convert PEM string to ArrayBuffer
+    function pemToArrayBuffer(pem) {
+      const b64 = pem.replace(/-----.*?-----/g, "").replace(/\s/g, "");
+      const binary = atob(b64);
+      const buffer = new ArrayBuffer(binary.length);
+      const view = new Uint8Array(buffer);
+      for (let i = 0; i < binary.length; i++) {
+        view[i] = binary.charCodeAt(i);
+      }
+      return buffer;
+    }
+
+    // Compute SHA-256 hash of a string
+    async function hashString(input) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(input);
+      const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    // ------------------------
+    // Diffie–Hellman Key Exchange with HKDF Step
+    // ------------------------
+    async function performDHKeyExchange() {
+      // Get the server's ECDH public key
+      const response = await fetch("http://localhost:5000/dh-server-key");
+      const { server_public_key } = await response.json();
+      const serverKeyBuffer = pemToArrayBuffer(server_public_key);
+      const serverPublicKey = await crypto.subtle.importKey(
+        "spki",
+        serverKeyBuffer,
+        { name: "ECDH", namedCurve: "P-256" },
+        true,
+        []
+      );
+      // Generate client's ECDH key pair
+      clientKeyPair = await crypto.subtle.generateKey(
+        { name: "ECDH", namedCurve: "P-256" },
+        true,
+        ["deriveKey", "deriveBits"]
+      );
+      // Export and store the client's public key in PEM format
+      const clientPublicKeySpki = await crypto.subtle.exportKey("spki", clientKeyPair.publicKey);
+      clientPublicPem = arrayBufferToPem(clientPublicKeySpki);
+      // First, derive raw bits from ECDH
+      const rawBits = await crypto.subtle.deriveBits(
+        { name: "ECDH", public: serverPublicKey },
+        clientKeyPair.privateKey,
+        256
+      );
+      // Import the raw bits as a key to use with HKDF
+      const sharedKeyMaterial = await crypto.subtle.importKey(
+        "raw",
+        rawBits,
+        { name: "HKDF" },
+        false,
+        ["deriveKey"]
+      );
+      // Derive an AES-GCM key using HKDF with the same parameters as the server
+      sharedSecretKey = await crypto.subtle.deriveKey(
+        {
+          name: "HKDF",
+          hash: "SHA-256",
+          salt: new Uint8Array([]),
+          info: new TextEncoder().encode("zk-voting-session")
+        },
+        sharedKeyMaterial,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+      );
+      console.log("🔑 Shared AES-GCM key derived successfully.");
+    }
+
+    // ------------------------
+    // MetaMask & Voting Functions
+    // ------------------------
+
+    async function connectWallet() {
+      try {
+        await performDHKeyExchange();
+        document.getElementById("status").innerText = "🔐 Secure channel established. MetaMask connected.";
+      } catch (err) {
+        console.error("❌ DH Key Exchange failed:", err);
+        alert("Diffie–Hellman key exchange failed. Check console.");
+        return;
+      }
+      if (!window.ethereum) {
+        alert("Please install MetaMask!");
+        return;
+      }
+      try {
+        const web3 = new Web3(window.ethereum);
+        await ethereum.request({ method: "eth_requestAccounts" });
+        const accounts = await web3.eth.getAccounts();
+        account = accounts[0];
+        contract = new web3.eth.Contract(CONTRACT_ABI, CONTRACT_ADDRESS);
+        document.getElementById("connectCard").style.display = "none";
+        document.getElementById("status").innerText = "🔍 Checking voting status...";
+        await checkVotingStatus();
+      } catch (err) {
+        console.error("❌ MetaMask connection failed:", err);
+        alert("MetaMask connection failed. See console.");
+      }
+    }
+
+    async function checkVotingStatus() {
+      try {
+        const endTime = await contract.methods.votingEnds().call();
+        const now = Math.floor(Date.now() / 1000);
+        const countdownElement = document.getElementById("countdown");
+        if (now < endTime) {
+          document.getElementById("status").innerText = "✅ Voting is OPEN";
+          document.getElementById("identityCard").style.display = "block";
+          startCountdown(Number(endTime));
+          await loadCandidates();
+        } else {
+          document.getElementById("status").innerText = "⚠️ Voting has ENDED";
+          document.getElementById("resultCard").style.display = "block";
+          countdownElement.innerText = "🕛 Voting has ended.";
+          await showWinner();
+        }
+      } catch (err) {
+        console.error("Status check failed:", err);
+        document.getElementById("status").innerText = "❌ Could not retrieve voting status.";
+      }
+    }
+
+    function startCountdown(endTime) {
+      const countdownElement = document.getElementById("countdown");
+      function updateCountdown() {
+        const now = Math.floor(Date.now() / 1000);
+        let secondsLeft = endTime - now;
+        if (secondsLeft <= 0) {
+          countdownElement.innerText = "🕛 Voting has ended.";
+          document.getElementById("identityCard").style.display = "none";
+          document.getElementById("voteCard").style.display = "none";
+          document.getElementById("resultCard").style.display = "block";
+          showWinner();
+          clearInterval(timer);
+          return;
+        }
+        const h = Math.floor(secondsLeft / 3600).toString().padStart(2, "0");
+        const m = Math.floor((secondsLeft % 3600) / 60).toString().padStart(2, "0");
+        const s = (secondsLeft % 60).toString().padStart(2, "0");
+        countdownElement.innerText = `⏳ Time remaining: ${h}:${m}:${s}`;
+      }
+      updateCountdown();
+      const timer = setInterval(updateCountdown, 1000);
+    }
+
+    async function loadCandidates() {
+      try {
+        const total = await contract.methods.getTotalCandidates().call();
+        const voteSelect = document.getElementById("vote");
+        voteSelect.innerHTML = "";
+        for (let i = 0; i < total; i++) {
+          const candidate = await contract.methods.getCandidate(i).call();
+          const name = candidate.name || candidate[0] || "Unknown";
+          const option = document.createElement("option");
+          option.value = i;
+          option.textContent = name;
+          voteSelect.appendChild(option);
+        }
+      } catch (e) {
+        console.error("Candidate load failed:", e);
+      }
+    }
+
+    // submitIdentity() computes a voter_id from CNP:UID, calls /establish-session,
+    // retrieves the session nonce, encrypts the identity details (using our HKDF‑derived sharedSecretKey),
+    // and finally calls /secure-identity.
+    async function submitIdentity() {
+      const cnp = document.getElementById("cnp").value.trim();
+      const uid = document.getElementById("uid").value.trim();
+      const statusDiv = document.getElementById("identityStatus");
+      if (!cnp || !uid) {
+        statusDiv.innerHTML = `<p class="error">CNP and UID are required.</p>`;
+        return;
+      }
+      const rawVoterId = cnp + ":" + uid;
+      const voterId = await hashString(rawVoterId);
+      // Establish a per-user session (deriving and storing the correct key on the server)
+      const sessionRes = await fetch("http://localhost:5000/establish-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voter_id: voterId, client_public_key: clientPublicPem })
+      });
+      const sessionData = await sessionRes.json();
+      if (sessionData.error) {
+        statusDiv.innerHTML = `<p class="error">Session establishment error: ${sessionData.error}</p>`;
+        return;
+      }
+      // Retrieve the session nonce for this voter
+      const nonceRes = await fetch("http://localhost:5000/get-session-nonce", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voter_id: voterId })
+      });
+      const { nonce, signature } = await nonceRes.json();
+      console.log(`🔐 Session nonce: ${nonce}`);
+      // Encrypt CNP and UID using our derived sharedSecretKey
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encoder = new TextEncoder();
+      const encryptedCnp = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, sharedSecretKey, encoder.encode(cnp));
+      const encryptedUid = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, sharedSecretKey, encoder.encode(uid));
+      const res = await fetch("http://localhost:5000/secure-identity", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          voter_id: voterId,
+          iv: Array.from(iv),
+          cnp: Array.from(new Uint8Array(encryptedCnp)),
+          uid: Array.from(new Uint8Array(encryptedUid))
+        })
+      });
+      const result = await res.json();
+      if (result.error) {
+        statusDiv.innerHTML = `<p class="error">${result.error}</p>`;
+      } else {
+        storedNullifier = result.nullifier;
+        statusDiv.innerHTML = `<p class="success">✅ Identity verified. Nullifier generated.</p>`;
+        console.log(`🧾 ZK1 Nullifier generated: ${storedNullifier}`);
+        document.getElementById("voteCard").style.display = "block";
+      }
+    }
+
+    // castVote() retrieves the vote proof and sends the vote (with proof) to the contract.
+    async function castVote() {
+      const candidateIndex = parseInt(document.getElementById("vote").value);
+      const voteStatus = document.getElementById("voteStatus");
+      if (isNaN(candidateIndex)) {
+        voteStatus.innerHTML = `<p class="error">❌ Please select a candidate.</p>`;
+        return;
+      }
+      if (!storedNullifier) {
+        voteStatus.innerHTML = `<p class="error">❌ You must verify identity first.</p>`;
+        return;
+      }
+      try {
+        const voteRes = await fetch("http://localhost:5000/generate-vote-proof", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nullifier: storedNullifier, vote: candidateIndex })
+        });
+        const voteData = await voteRes.json();
+        if (voteData.error) {
+          voteStatus.innerHTML = `<p class="error">${voteData.error}</p>`;
+          return;
+        }
+        storedCommitment = voteData.commitment;
+        const hexNullifier = BigInt(storedNullifier).toString(16).padStart(64, "0");
+        const hexCommitment = BigInt(storedCommitment).toString(16).padStart(64, "0");
+        await contract.methods.castVote("0x" + hexNullifier, "0x" + hexCommitment, candidateIndex)
+                       .send({ from: account });
+        voteStatus.innerHTML = `<p class="success">✅ Vote submitted!</p>`;
+      } catch (err) {
+        console.error("Vote failed:", err);
+        voteStatus.innerHTML = `<p class="error">❌ Transaction failed or rejected.</p>`;
+      }
+    }
+
+    async function showWinner() {
+      try {
+        const result = await contract.methods.getWinner().call();
+        const name = result.name || result[0];
+        const count = result.voteCount || result[1];
+        document.getElementById("winnerInfo").innerText = `🏆 ${name} with ${count} votes`;
+      } catch {
+        document.getElementById("winnerInfo").innerText = `❌ Could not fetch winner`;
+      }
+    }
+
+    // Expose functions for use by HTML buttons
+    window.connectWallet = connectWallet;
+    window.submitIdentity = submitIdentity;
+    window.castVote = castVote;
+  </script>
+</body>
+</html>

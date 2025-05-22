@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>🧪 ZK Proof Verifier (Hashed)</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #f9fbfd;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+      color: #333;
+    }
+    h1 {
+      color: #1d3557;
+    }
+    .card {
+      background: white;
+      border-radius: 14px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      padding: 2rem;
+      width: 100%;
+      max-width: 700px;
+    }
+    textarea, select, input[type="file"], button {
+      width: 100%;
+      padding: 0.75rem;
+      margin: 0.5rem 0;
+      font-size: 14px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+    }
+    button {
+      background: #1d3557;
+      color: white;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover {
+      background: #457b9d;
+    }
+    .success { color: green; }
+    .error { color: red; }
+    .section-title {
+      margin-top: 1rem;
+      font-weight: 600;
+    }
+    .info-box {
+      background: #f1f3f5;
+      padding: 1rem;
+      border-radius: 8px;
+      font-size: 14px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🔍 Zero-Knowledge Proof Verifier (Hashed)</h1>
+  <div class="card">
+
+    <label for="proofFile">Upload Proof JSON</label>
+    <input type="file" id="proofFile" accept=".json">
+
+    <label for="proofHashFile">Upload Proof Hash (.hash)</label>
+    <input type="file" id="proofHashFile" accept=".hash,.txt">
+
+    <label for="publicFile">Upload Public Signals JSON</label>
+    <input type="file" id="publicFile" accept=".json">
+
+    <label for="type">Proof Type:</label>
+    <select id="type">
+      <option value="nullifier">ZK1 – Identity Verification</option>
+      <option value="vote">ZK2 – Vote Submission</option>
+    </select>
+
+    <button onclick="verifyProof()">✅ Verify Proof</button>
+    <div id="result" class="section-title"></div>
+    <div id="details" class="info-box"></div>
+
+  </div>
+
+  <script>
+    let proofData = null;
+    let publicData = null;
+    let uploadedHash = null;
+
+    document.getElementById("proofFile").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        try {
+          const text = await file.text();
+          proofData = JSON.parse(text);
+          document.getElementById("details").textContent += "📄 Loaded proof.json ✅\n";
+        } catch {
+          document.getElementById("details").textContent = "❌ Failed to parse proof file.\n";
+        }
+      }
+    });
+
+    document.getElementById("proofHashFile").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        uploadedHash = (await file.text()).trim();
+        document.getElementById("details").textContent += `📄 Loaded proof.hash ✅\nHash: ${uploadedHash}\n`;
+      }
+    });
+
+    document.getElementById("publicFile").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        try {
+          const text = await file.text();
+          publicData = JSON.parse(text);
+          document.getElementById("details").textContent += "📄 Loaded public.json ✅\n";
+        } catch {
+          document.getElementById("details").textContent = "❌ Failed to parse public file.\n";
+        }
+      }
+    });
+
+    // Helper function to canonicalize JSON by sorting keys recursively
+    function canonicalize(obj) {
+      if (typeof obj !== 'object' || obj === null) {
+        return JSON.stringify(obj);
+      }
+      if (Array.isArray(obj)) {
+        return '[' + obj.map(canonicalize).join(',') + ']';
+      }
+      const sortedKeys = Object.keys(obj).sort();
+      const keyValuePairs = sortedKeys.map(key => JSON.stringify(key) + ':' + canonicalize(obj[key]));
+      return '{' + keyValuePairs.join(',') + '}';
+    }
+
+    async function verifyProof() {
+      const endpoint = document.getElementById("type").value === "nullifier"
+        ? "/verify-nullifier"
+        : "/verify-vote";
+
+      if (!proofData || !publicData || !uploadedHash) {
+        document.getElementById("result").innerHTML = "⚠️ Please upload all required files: proof, hash, and public.";
+        document.getElementById("result").className = "error";
+        return;
+      }
+
+      // Use canonicalize() to get a sorted, compact JSON string (matching Python's json.dumps with sort_keys and separators)
+      const canonicalProof = canonicalize(proofData);
+      const encoded = new TextEncoder().encode(canonicalProof);
+      const hashBuffer = await crypto.subtle.digest("SHA-256", encoded);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const computedHash = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+
+      document.getElementById("details").textContent += `🔑 Computed proof hash: ${computedHash}\n`;
+
+      if (computedHash !== uploadedHash) {
+        document.getElementById("result").innerHTML = "❌ Proof hash mismatch!";
+        document.getElementById("result").className = "error";
+        return;
+      }
+
+      document.getElementById("result").innerText = "⏳ Sending data to Flask backend...";
+      document.getElementById("details").textContent += `📤 Sending request to ${endpoint}\n`;
+
+      try {
+        const res = await fetch(`http://localhost:5000${endpoint}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ proof: proofData, public: publicData })
+        });
+
+        const result = await res.json();
+
+        if (result.valid === true) {
+          document.getElementById("result").innerHTML = "✅ Valid Proof!";
+          document.getElementById("result").className = "success";
+        } else if (result.valid === false) {
+          document.getElementById("result").innerHTML = "❌ Invalid Proof!";
+          document.getElementById("result").className = "error";
+        } else {
+          document.getElementById("result").innerHTML = "⚠️ Unknown response.";
+        }
+
+        document.getElementById("details").textContent +=
+          `📤 Public Inputs:\n${JSON.stringify(publicData, null, 2)}\n\n` +
+          `📤 Proof:\n${JSON.stringify(proofData, null, 2)}\n`;
+
+      } catch (err) {
+        document.getElementById("result").innerText = "❌ Network or backend error.";
+        document.getElementById("result").className = "error";
+        console.error(err);
+      }
+    }
+  </script>
+</body>
+</html>
